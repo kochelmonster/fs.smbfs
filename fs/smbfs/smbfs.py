@@ -11,6 +11,7 @@ import nmb.NetBIOS
 import smb.SMBConnection
 import smb.smb_constants
 import smb.security_descriptors
+import smb.base
 
 from .. import errors
 from ..base import FS
@@ -65,9 +66,6 @@ class SMBFS(FS):
         'unicode_paths': True,
         'virtual': False,
     }
-
-    #: The client used to communicate with the NetBIOS naming service.
-    NETBIOS = nmb.NetBIOS.NetBIOS()
 
     @classmethod
     def _make_info_from_shared_file(cls, shared_file, sd=None, namespaces=None):
@@ -205,6 +203,9 @@ class SMBFS(FS):
                  port=139, name_port=137, direct_tcp=False):  # noqa: D102
         super(SMBFS, self).__init__()
 
+        #: The client used to communicate with the NetBIOS naming service.
+        self.NETBIOS = nmb.NetBIOS.NetBIOS()
+
         try:
             self._server_name, self._server_ip = utils.get_hostname_and_ip(
                 host, self.NETBIOS,
@@ -231,14 +232,24 @@ class SMBFS(FS):
         except (IOError, OSError):
             raise errors.CreateFailed("could not connect to '{}'".format(host))
 
-        self._shares = {
-            share.name for share in self._smb.listShares()
+        try:
+            self._shares = {
+                share.name for share in self._smb.listShares()
                 if share.type == share.DISK_TREE
-        }
+            }
+        except smb.base.NotReadyError as e:
+            if "not authenticated" in repr(e):
+                raise errors.PermissionDenied()
+            else:
+                raise
 
     def close(self):  # noqa: D102
         if not self.isclosed():
-            self._smb.close()
+            self.NETBIOS.close()
+            try:
+                self._smb.close()
+            except AttributeError:
+                pass
             super(SMBFS, self).close()
 
     def makedir(self, path, permissions=None, recreate=False):  # noqa: D102
